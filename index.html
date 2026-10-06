@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Machine Monitor</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#0b1220;color:#e5e7eb}
+.container{max-width:1250px;margin:auto;padding:24px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
+h1{margin:0;font-size:28px}
+.subtitle{color:#94a3b8;margin-top:6px}
+.connection{display:flex;align-items:center;gap:8px;background:#111827;padding:10px 15px;border-radius:20px}
+.dot{width:10px;height:10px;border-radius:50%;background:#ef4444}.dot.online{background:#22c55e}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.card,.panel{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:20px;box-shadow:0 8px 30px rgba(0,0,0,.18)}
+.label{color:#94a3b8;font-size:14px}
+.value{font-size:32px;font-weight:700;margin-top:10px}
+.unit{font-size:16px;color:#94a3b8}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:20px}
+.chart{height:330px}
+canvas{width:100%;height:100%}
+.panel h2{font-size:18px;margin-top:0}
+.details{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.detail{background:#0b1220;border-radius:10px;padding:12px}
+.detail span{display:block;color:#94a3b8;font-size:12px;margin-bottom:5px}
+.status{font-size:26px;font-weight:700;padding:18px;border-radius:12px;text-align:center;background:#064e3b;color:#6ee7b7}
+.status.alert{background:#7f1d1d;color:#fecaca}
+.small{color:#94a3b8;font-size:13px;margin-top:12px}
+@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+@media(max-width:550px){.cards{grid-template-columns:1fr}.container{padding:14px}}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+  <div>
+    <h1>Smart Machine Monitor</h1>
+    <div class="subtitle">ESP8266 • Firebase • Real-Time Monitoring</div>
+  </div>
+  <div class="connection"><span id="dot" class="dot"></span><span id="connectionText">Offline</span></div>
+</header>
+
+<section class="cards">
+  <div class="card"><div class="label">Temperature</div><div class="value" id="temperature">--</div><span class="unit">°C</span></div>
+  <div class="card"><div class="label">Humidity</div><div class="value" id="humidity">--</div><span class="unit">%</span></div>
+  <div class="card"><div class="label">Vibration</div><div class="value" id="vibration">--</div><span class="unit">g</span></div>
+  <div class="card"><div class="label">Distance</div><div class="value" id="distance">--</div><span class="unit">cm</span></div>
+</section>
+
+<div class="grid">
+  <div>
+    <div class="panel chart">
+      <h2>Temperature Trend</h2>
+      <canvas id="tempChart"></canvas>
+    </div>
+    <br>
+    <div class="panel chart">
+      <h2>Vibration Trend</h2>
+      <canvas id="vibrationChart"></canvas>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Machine Health</h2>
+      <div id="status" class="status">NORMAL</div>
+      <div class="small">Last update: <span id="lastUpdate">--</span></div>
+    </div>
+    <br>
+    <div class="panel">
+      <h2>Sensor Details</h2>
+      <div class="details">
+        <div class="detail"><span>Pressure</span><b id="pressure">--</b> hPa</div>
+        <div class="detail"><span>Altitude</span><b id="altitude">--</b> m</div>
+        <div class="detail"><span>Roll</span><b id="roll">--</b> °</div>
+        <div class="detail"><span>Pitch</span><b id="pitch">--</b> °</div>
+        <div class="detail"><span>ADXL X</span><b id="adxlX">--</b></div>
+        <div class="detail"><span>ADXL Y</span><b id="adxlY">--</b></div>
+        <div class="detail"><span>ADXL Z</span><b id="adxlZ">--</b></div>
+        <div class="detail"><span>Gyro X</span><b id="gyroX">--</b></div>
+        <div class="detail"><span>Gyro Y</span><b id="gyroY">--</b></div>
+        <div class="detail"><span>Gyro Z</span><b id="gyroZ">--</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "YOUR_FIREBASE_WEB_API_KEY",
+  authDomain: "esp-32-temperature-monitoring.firebaseapp.com",
+  databaseURL: "https://esp-32-temperature-monitoring-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "esp-32-temperature-monitoring",
+  storageBucket: "esp-32-temperature-monitoring.firebasestorage.app",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_FIREBASE_APP_ID"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const machineRef = ref(db, "machine1");
+
+const tempHistory = [];
+const vibrationHistory = [];
+const timeHistory = [];
+const maxPoints = 30;
+
+function setText(id, value, digits=2){
+  document.getElementById(id).textContent =
+    typeof value === "number" ? value.toFixed(digits) : (value ?? "--");
+}
+
+function drawChart(canvasId, values, label){
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width*dpr;
+  canvas.height = rect.height*dpr;
+  ctx.scale(dpr,dpr);
+
+  const w=rect.width,h=rect.height;
+  ctx.clearRect(0,0,w,h);
+  if(!values.length)return;
+
+  const pad=35, min=Math.min(...values), max=Math.max(...values);
+  const range=(max-min)||1;
+
+  ctx.strokeStyle="#334155";
+  ctx.lineWidth=1;
+  for(let i=0;i<5;i++){
+    const y=pad+(h-pad*2)*i/4;
+    ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();
+  }
+
+  ctx.beginPath();
+  values.forEach((v,i)=>{
+    const x=pad+(w-pad*2)*(i/Math.max(values.length-1,1));
+    const y=h-pad-(v-min)/range*(h-pad*2);
+    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle="#60a5fa";
+  ctx.lineWidth=2.5;
+  ctx.stroke();
+
+  ctx.fillStyle="#94a3b8";
+  ctx.font="12px Arial";
+  ctx.fillText(label, pad, 18);
+  ctx.fillText(max.toFixed(2), 5, pad);
+  ctx.fillText(min.toFixed(2), 5, h-pad);
+}
+
+onValue(machineRef, snapshot=>{
+  const d=snapshot.val();
+  if(!d)return;
+
+  document.getElementById("dot").classList.add("online");
+  document.getElementById("connectionText").textContent="Online";
+
+  setText("temperature", Number(d.temperature), 1);
+  setText("humidity", Number(d.humidity), 1);
+  setText("vibration", Number(d.vibration), 2);
+  setText("distance", Number(d.distance), 1);
+  setText("pressure", Number(d.pressure), 1);
+  setText("altitude", Number(d.altitude), 1);
+  setText("roll", Number(d.roll), 1);
+  setText("pitch", Number(d.pitch), 1);
+  setText("adxlX", Number(d.accelerationX), 2);
+  setText("adxlY", Number(d.accelerationY), 2);
+  setText("adxlZ", Number(d.accelerationZ), 2);
+  setText("gyroX", Number(d.gyroX), 2);
+  setText("gyroY", Number(d.gyroY), 2);
+  setText("gyroZ", Number(d.gyroZ), 2);
+
+  const status=(d.status||"NORMAL").toString();
+  const statusEl=document.getElementById("status");
+  statusEl.textContent=status;
+  statusEl.classList.toggle("alert",status!=="NORMAL");
+
+  document.getElementById("lastUpdate").textContent=new Date().toLocaleTimeString();
+
+  tempHistory.push(Number(d.temperature)||0);
+  vibrationHistory.push(Number(d.vibration)||0);
+  timeHistory.push(Date.now());
+  if(tempHistory.length>maxPoints)tempHistory.shift();
+  if(vibrationHistory.length>maxPoints)vibrationHistory.shift();
+  if(timeHistory.length>maxPoints)timeHistory.shift();
+
+  drawChart("tempChart",tempHistory,"Temperature °C");
+  drawChart("vibrationChart",vibrationHistory,"Vibration g");
+});
+
+window.addEventListener("resize",()=>{
+  drawChart("tempChart",tempHistory,"Temperature °C");
+  drawChart("vibrationChart",vibrationHistory,"Vibration g");
+});
+</script>
+</body>
+</html>
